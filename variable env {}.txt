@@ -1,0 +1,625 @@
+variable "env" {}
+variable "ami" {}
+variable "instance_type" { default = "t2.micro" }
+variable "subnet_ids" {}
+variable "sg_id" {}
+variable "target_group_arn" {}
+
+# =========================
+# Launch Template
+# =========================
+resource "aws_launch_template" "this" {
+  name_prefix   = "${var.env}-lt-"
+  image_id      = var.ami
+  instance_type = var.instance_type
+
+  vpc_security_group_ids = [var.sg_id]
+
+  user_data = base64encode(file("${path.module}/../../scripts/deploy.sh"))
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "${var.env}-web"
+      Env  = var.env
+    }
+  }
+}
+
+# =========================
+# Auto Scaling Group
+# =========================
+resource "aws_autoscaling_group" "this" {
+  name = "${var.env}-asg"
+
+  min_size         = 2
+  max_size         = 4
+  desired_capacity = 2
+
+  vpc_zone_identifier = var.subnet_ids
+
+  launch_template {
+    id      = aws_launch_template.this.id
+    version = "$Latest"
+  }
+
+  target_group_arns = [var.target_group_arn]
+
+  health_check_type         = "ELB"
+  health_check_grace_period = 60
+
+  tag {
+    key                 = "Name"
+    value               = "${var.env}-web"
+    propagate_at_launch = true
+  }
+}
+
+variables.tf
+variable "env" {}
+variable "ami" {}
+variable "instance_type" { default = "t3.micro" }
+
+variable "subnet_ids" {
+  type = list(string)
+}
+
+variable "sg_id" {}
+variable "target_group_arn" {}
+
+variable "min_size" { default = 2 }
+variable "max_size" { default = 4 }
+variable "desired_capacity" { default = 2 }
+
+#  控制 LT 版本
+variable "lt_version" {
+  default = null
+}
+
+variable "cpu_target" {
+  default = 60
+}
+ IAM
+resource "aws_iam_role" "ec2_role" {
+  name = "${var.env}-ec2-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy_attachment" "cw" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_iam_instance_profile" "this" {
+  name = "${var.env}-profile"
+  role = aws_iam_role.ec2_role.name
+}
+Launch Template
+resource "aws_launch_template" "this" {
+  name_prefix   = "${var.env}-lt-"
+  image_id      = var.ami
+  instance_type = var.instance_type
+
+  vpc_security_group_ids = [var.sg_id]
+
+  #  IAM绑定
+  iam_instance_profile {
+    name = aws_iam_instance_profile.this.name
+  }
+
+  # user_data 模板化
+  user_data = base64encode(templatefile("${path.module}/scripts/deploy.sh", {
+    env = var.env
+  }))
+
+  # 开启监控
+  monitoring {
+    enabled = true
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+
+    tags = {
+      Name = "${var.env}-web"
+      Env  = var.env
+    }
+  }
+}
+Auto Scaling Group
+resource "aws_autoscaling_group" "this" {
+  name = "${var.env}-asg"
+
+  min_size         = var.min_size
+  max_size         = var.max_size
+  desired_capacity = var.desired_capacity
+
+  vpc_zone_identifier = var.subnet_ids
+
+  #  LT版本控制（避免 $Latest）
+  launch_template {
+    id = aws_launch_template.this.id
+
+    version = var.lt_version != null ?
+      var.lt_version :
+      aws_launch_template.this.latest_version
+  }
+
+  target_group_arns = [var.target_group_arn]
+
+  health_check_type         = "ELB"
+  health_check_grace_period = 120
+
+  # 防止扩容抖动
+  default_instance_warmup = 180
+
+  # 滚动更新
+  instance_refresh {
+    strategy = "Rolling"
+
+    preferences {
+      min_healthy_percentage = 50
+    }
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "${var.env}-web"
+    propagate_at_launch = true
+  }
+}
+ 扩缩容策略
+resource "aws_autoscaling_policy" "cpu" {
+  name                   = "${var.env}-cpu-policy"
+  policy_type            = "TargetTrackingScaling"
+  autoscaling_group_name = aws_autoscaling_group.this.name
+
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+
+    target_value = var.cpu_target
+  }
+}
+三、deploy.sh
+#!/bin/bash
+set -e
+
+# 安装 Docker
+yum install -y docker
+systemctl start docker
+systemctl enable docker
+
+# CloudWatch Agent
+yum install -y amazon-cloudwatch-agent
+
+创建 systemd 服务
+cat <<EOF > /etc/systemd/system/myapp.service
+[Unit]
+Description=My App
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker run --rm -p 80:80 myapp:latest
+ExecStop=/usr/bin/docker stop myapp
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable myapp
+systemctl start myapp
+
+CI/CD
+发布流程：
+docker build -t myapp:v2 .
+
+docker push myapp:v2
+
+# 更新
+terraform apply
+
+# 指定版本
+terraform apply -var="lt_version=5"
+
+resource "aws_autoscaling_group" "this" {
+  name = "${var.env}-asg"
+
+  min_size         = var.min_size
+  max_size         = var.max_size
+  desired_capacity = var.desired_capacity
+
+  vpc_zone_identifier = var.subnet_ids
+
+  launch_template {
+    id = aws_launch_template.this.id
+
+    version = var.lt_version != null ?
+      var.lt_version :
+      aws_launch_template.this.latest_version
+  }
+
+  target_group_arns = [var.target_group_arn]
+
+  health_check_type         = "ELB"
+  health_check_grace_period = 180
+
+  default_instance_warmup = 180
+
+  instance_refresh {
+    strategy = "Rolling"
+
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 120
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "${var.env}-web"
+    propagate_at_launch = true
+  }
+}
+
+#!/bin/bash
+set -euo pipefail
+
+yum install -y docker
+systemctl enable docker
+systemctl start docker
+
+# 登录 ECR
+aws ecr get-login-password \
+  | docker login \
+  --username AWS \
+  --password-stdin <account>.dkr.ecr.ap-northeast-1.amazonaws.com
+
+docker pull <repo>/myapp:latest
+
+docker rm -f myapp || true
+
+docker run -d \
+  --name myapp \
+  --restart always \
+  -p 80:80 \
+  <repo>/myapp:latest
+
+# 健康检查
+for i in {1..10}; do
+  if curl -f http://localhost:80 >/dev/null 2>&1; then
+    echo "Service healthy"
+    exit 0
+  fi
+  sleep 3
+done
+
+exit 1
+
+
+#!/bin/bash
+set -euo pipefail
+
+APP_NAME=${APP_NAME:-webapp}
+REGION=${REGION:-ap-northeast-1}
+IMAGE=${IMAGE:-nginx:latest}
+
+echo "[INFO] Starting setup..."
+
+# =========================
+# 安装依赖
+# =========================
+yum update -y
+yum install -y docker amazon-cloudwatch-agent aws-cli curl
+
+systemctl enable docker
+systemctl start docker
+
+# =========================
+# CloudWatch Logs group（防失败）
+# =========================
+aws logs create-log-group \
+  --log-group-name "${APP_NAME}-app" \
+  --region "${REGION}" || true
+
+# =========================
+# CloudWatch Agent 配置
+# =========================
+cat <<EOF > /opt/aws/amazon-cloudwatch-agent/etc/agent.json
+{
+  "metrics": {
+    "namespace": "EC2/Custom",
+    "append_dimensions": {
+      "InstanceId": "\${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["mem_used_percent"]
+      },
+      "disk": {
+        "measurement": ["used_percent"],
+        "resources": ["/"]
+      }
+    }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/messages",
+            "log_group_name": "${APP_NAME}-system",
+            "log_stream_name": "{instance_id}"
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
+
+# 启动 agent
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/agent.json -s
+
+systemctl enable amazon-cloudwatch-agent
+docker pull ${IMAGE}
+
+# =========================
+# systemd 服务
+# =========================
+cat <<EOF > /etc/systemd/system/${APP_NAME}.service
+[Unit]
+Description=${APP_NAME}
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker run \
+  --name ${APP_NAME} \
+  --restart always \
+  -p 80:80 \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=${REGION} \
+  --log-opt awslogs-group=${APP_NAME}-app \
+  ${IMAGE}
+
+ExecStop=/usr/bin/docker stop ${APP_NAME}
+ExecStopPost=/usr/bin/docker rm ${APP_NAME}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable ${APP_NAME}
+systemctl start ${APP_NAME}
+
+# =========================
+# 健康检查
+# =========================
+for i in {1..10}; do
+  if curl -sf http://localhost/ > /dev/null; then
+    echo "[INFO] App healthy"
+    exit 0
+  fi
+  sleep 5
+done
+
+echo "[ERROR] App failed"
+exit 1
+
+#!/bin/bash
+set -euo pipefail
+trap 'echo "[ERROR] Failed at line $LINENO"' ERR
+
+# 日志统一输出（企业必须）
+exec > >(tee /var/log/user-data.log) 2>&1
+
+# =========================
+# 参数（企业必须）
+# =========================
+APP_NAME=${APP_NAME:-myapp}
+REGION=${REGION:-ap-northeast-1}
+IMAGE=${IMAGE:-nginx:latest}
+
+echo "[INFO] Starting setup..."
+
+# =========================
+# 安装依赖
+# =========================
+yum update -y
+yum install -y docker amazon-cloudwatch-agent aws-cli curl
+
+systemctl enable docker
+systemctl start docker
+
+# =========================
+# CloudWatch Logs
+# =========================
+aws logs create-log-group \
+  --log-group-name "${APP_NAME}-app" \
+  --region "${REGION}" || true
+
+# =========================
+# CloudWatch Agent 配置
+# =========================
+cat <<EOF > /opt/aws/amazon-cloudwatch-agent/etc/agent.json
+{
+  "metrics": {
+    "namespace": "${APP_NAME}",
+    "append_dimensions": {
+      "InstanceId": "\${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["mem_used_percent"]
+      },
+      "disk": {
+        "measurement": ["used_percent"],
+        "resources": ["/"]
+      }
+    }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/messages",
+            "log_group_name": "${APP_NAME}-system",
+            "log_stream_name": "{instance_id}"
+          },
+          {
+            "file_path": "/var/log/user-data.log",
+            "log_group_name": "${APP_NAME}-init",
+            "log_stream_name": "{instance_id}"
+          }
+        ]
+      }
+    }
+  }
+}
+EOF
+
+# =========================
+# 启动 CloudWatch Agent
+# =========================
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/agent.json -s
+
+systemctl enable amazon-cloudwatch-agent
+
+# Agent 健康检查
+if ! systemctl is-active --quiet amazon-cloudwatch-agent; then
+  echo "[ERROR] CW Agent failed"
+  exit 1
+fi
+
+# =========================
+# 应用（
+# =========================
+docker rm -f ${APP_NAME} 2>/dev/null || true
+docker pull ${IMAGE}
+
+cat <<EOF > /etc/systemd/system/${APP_NAME}.service
+[Unit]
+Description=${APP_NAME}
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker run \
+  --name ${APP_NAME} \
+  --restart always \
+  -p 80:80 \
+  --log-driver=awslogs \
+  --log-opt awslogs-region=${REGION} \
+  --log-opt awslogs-group=${APP_NAME}-app \
+  --log-opt awslogs-create-group=true \
+  ${IMAGE}
+
+ExecStop=/usr/bin/docker stop ${APP_NAME}
+ExecStopPost=/usr/bin/docker rm ${APP_NAME}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable ${APP_NAME}
+systemctl start ${APP_NAME}
+
+# =========================
+# 健康检查（
+# =========================
+for i in {1..10}; do
+  if curl -sf http://localhost/ > /dev/null; then
+    echo "[INFO] App healthy"
+    exit 0
+  fi
+  sleep 5
+done
+
+echo "[ERROR] App failed"
+exit 1
+
+resource "aws_cloudwatch_metric_alarm" "cpu_high" {
+  alarm_name          = "${var.env}-cpu-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 80
+
+  dimensions = {
+    AutoScalingGroupName = var.asg_name
+  }
+
+  alarm_description = "CPU too high"
+  alarm_actions     = [var.sns_topic_arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "mem_high" {
+  alarm_name          = "${var.env}-mem-high"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "mem_used_percent"
+  namespace           = var.namespace   # 必须和 agent 一致！
+  period              = 60
+  statistic           = "Average"
+  threshold           = 80
+
+  dimensions = {
+    AutoScalingGroupName = var.asg_name
+  }
+
+  alarm_actions = [var.sns_topic_arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
+  alarm_name          = "${var.env}-alb-5xx"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 10
+
+  dimensions = {
+    LoadBalancer = var.alb_arn_suffix
+  }
+
+  alarm_actions = [var.sns_topic_arn]
+}
