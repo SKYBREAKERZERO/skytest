@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefai
+set -euo pipefail
 BASE="live/dev"
 
 echo "Creating directories..."
