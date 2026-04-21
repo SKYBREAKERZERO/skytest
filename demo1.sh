@@ -1,50 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 BASE="live/dev"
 
-echo "Creating directories..."
+echo " Creating directories..."
 
-mkdir -p "${BASE}/global"
-mkdir -p "${BASE}/datalake"
-mkdir -p "${BASE}/governance"
-mkdir -p "${BASE}/monitoring"
-echo "Creating files..."
+mkdir -p "${BASE}"/{global,datalake,governance,monitoring}
+
+echo " Creating files..."
+
 # global
-touch "${BASE}/global/backend.tf"
-touch "${BASE}/global/providers.tf"
-touch "${BASE}/global/variables.tf"
-touch "${BASE}/global/terraform.tfvars"
-touch "${BASE}/global/main.tf"
+touch "${BASE}/global/"{backend.tf,providers.tf,variables.tf,terraform.tfvars,main.tf}
 
 # datalake
-touch "${BASE}/datalake/backend.tf"
-touch "${BASE}/datalake/providers.tf"
-touch "${BASE}/datalake/variables.tf"
-touch "${BASE}/datalake/terraform.tfvars"
-touch "${BASE}/datalake/main.tf"
-touch "${BASE}/datalake/outputs.tf"
+touch "${BASE}/datalake/"{backend.tf,providers.tf,variables.tf,terraform.tfvars,main.tf,outputs.tf}
 
 # governance
-touch "${BASE}/governance/backend.tf"
-touch "${BASE}/governance/providers.tf"
-touch "${BASE}/governance/main.tf"
+touch "${BASE}/governance/"{backend.tf,providers.tf,main.tf}
 
 # monitoring
-touch "${BASE}/monitoring/backend.tf"
-touch "${BASE}/monitoring/providers.tf"
-touch "${BASE}/monitoring/main.tf"
+touch "${BASE}/monitoring/"{backend.tf,providers.tf,main.tf}
 
 # root files
-touch "${BASE}/env.tfvars"
-touch "${BASE}/versions.tf"
-touch "${BASE}/Makefile"
-touch "${BASE}/control.sh"
+touch "${BASE}/"{env.tfvars,versions.tf,Makefile,control.sh}
 
 echo " Structure created successfully!"
+
 if command -v tree >/dev/null 2>&1; then
   echo ""
-  echo "Directory structure:"
+  echo " Directory structure:"
   tree "${BASE}"
 else
-  echo "'tree' not installed. Run: sudo apt install tree"
+  echo " Install tree: sudo apt install tree"
 fi
