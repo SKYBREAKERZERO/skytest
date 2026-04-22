@@ -13,7 +13,7 @@ sleep_if_needed() {
 }
 
 normalize() {
-  echo "$1" | tr -d '\r\n '
+  echo "$1" | tr -d '\r\n\t '
 }
 
 mock_s3_get() {
@@ -27,7 +27,7 @@ mock_s3_get() {
   sleep_if_needed
 
   case "$key" in
-    "config/app.json")
+    *config/app.json*)
 cat <<EOF
 {
   "env": "dev",
@@ -42,11 +42,11 @@ cat <<EOF
 EOF
       return 0
       ;;
-    "notfound")
+    *notfound*)
       echo '{"error":"NoSuchKey"}' >&2
       return 1
       ;;
-    "error")
+    *error*)
       echo '{"error":"InternalError"}' >&2
       return 2
       ;;
@@ -91,10 +91,10 @@ mock_http_get() {
   sleep_if_needed
 
   case "$url" in
-    *"/health")
+    *"/health"*)
       echo '{"status":"ok"}'
       ;;
-    *"/fail")
+    *"/fail"*)
       echo '{"error":"500"}' >&2
       return 1
       ;;
