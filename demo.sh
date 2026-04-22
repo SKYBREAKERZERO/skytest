@@ -26,18 +26,18 @@ mock_s3_get() {
   log "S3 GET s3://$bucket/$key"
   sleep_if_needed
 
-  if [[ "$key" == *config/app.json* ]]; then
+  if [[ "$key" == "config/app.json" ]]; then
     echo '{"env":"dev","service":"demo","data":{"db":{"host":"127.0.0.1","port":3306}}}'
     return 0
   fi
 
-  if [[ "$key" == *notfound* ]]; then
-    echo '{"error":"NoSuchKey"}' >&2
+  if [[ "$key" == "notfound" ]]; then
+    echo '{"error":"NoSuchKey"}'
     return 1
   fi
 
-  if [[ "$key" == *error* ]]; then
-    echo '{"error":"InternalError"}' >&2
+  if [[ "$key" == "error" ]]; then
+    echo '{"error":"InternalError"}'
     return 2
   fi
 
@@ -57,6 +57,7 @@ mock_redis_get() {
   fi
 
   if [[ "$key" == "missing" ]]; then
+    echo '{"error":"not_found"}'
     return 1
   fi
 
@@ -76,7 +77,7 @@ mock_http_get() {
   fi
 
   if [[ "$url" == *"/fail"* ]]; then
-    echo '{"error":"500"}' >&2
+    echo '{"error":"500"}'
     return 1
   fi
 
@@ -95,7 +96,7 @@ http_get() {
   mock_http_get "$1"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+main() {
   case "${1:-}" in
     s3)
       s3_get "${2:-}" "${3:-}"
@@ -114,4 +115,6 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       exit 1
       ;;
   esac
-fi
+}
+
+main "$@"
