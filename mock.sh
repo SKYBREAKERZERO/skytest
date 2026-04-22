@@ -27,21 +27,21 @@ mock_s3_get() {
   sleep_if_needed
 
   if [[ "$key" == *config/app.json* ]]; then
-    echo '{"env":"dev","service":"demo","data":{"db":{"host":"127.0.0.1","port":3306}}}'
+    printf '%s\n' '{"env":"dev","service":"demo","data":{"db":{"host":"127.0.0.1","port":3306}}}'
     return 0
   fi
 
   if [[ "$key" == *notfound* ]]; then
-    echo '{"error":"NoSuchKey"}' >&2
+    printf '%s\n' '{"error":"NoSuchKey"}'
     return 1
   fi
 
   if [[ "$key" == *error* ]]; then
-    echo '{"error":"InternalError"}' >&2
+    printf '%s\n' '{"error":"InternalError"}'
     return 2
   fi
 
-  echo '{"bucket":"'"$bucket"'","key":"'"$key"'","data":{}}'
+  printf '%s\n' '{"bucket":"'"$bucket"'","key":"'"$key"'","data":{}}'
 }
 
 mock_redis_get() {
@@ -52,15 +52,16 @@ mock_redis_get() {
   sleep_if_needed
 
   if [[ "$key" == "user:1" ]]; then
-    echo '{"id":1,"name":"alice"}'
+    printf '%s\n' '{"id":1,"name":"alice"}'
     return 0
   fi
 
   if [[ "$key" == "missing" ]]; then
+    printf '%s\n' '{"error":"not_found"}'
     return 1
   fi
 
-  echo '{}'
+  printf '%s\n' '{}'
 }
 
 mock_http_get() {
@@ -71,16 +72,16 @@ mock_http_get() {
   sleep_if_needed
 
   if [[ "$url" == *"/health"* ]]; then
-    echo '{"status":"ok"}'
+    printf '%s\n' '{"status":"ok"}'
     return 0
   fi
 
   if [[ "$url" == *"/fail"* ]]; then
-    echo '{"error":"500"}' >&2
+    printf '%s\n' '{"error":"500"}'
     return 1
   fi
 
-  echo '{"message":"ok"}'
+  printf '%s\n' '{"message":"ok"}'
 }
 
 s3_get() {
