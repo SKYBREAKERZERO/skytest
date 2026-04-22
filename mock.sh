@@ -26,41 +26,22 @@ mock_s3_get() {
   log "S3 GET s3://$bucket/$key"
   sleep_if_needed
 
-  case "$key" in
-    *config/app.json*)
-cat <<EOF
-{
-  "env": "dev",
-  "service": "demo",
-  "data": {
-    "db": {
-      "host": "127.0.0.1",
-      "port": 3306
-    }
-  }
-}
-EOF
-      return 0
-      ;;
-    *notfound*)
-      echo '{"error":"NoSuchKey"}' >&2
-      return 1
-      ;;
-    *error*)
-      echo '{"error":"InternalError"}' >&2
-      return 2
-      ;;
-    *)
-cat <<EOF
-{
-  "bucket": "$bucket",
-  "key": "$key",
-  "data": {}
-}
-EOF
-      return 0
-      ;;
-  esac
+  if [[ "$key" == *config/app.json* ]]; then
+    echo '{"env":"dev","service":"demo","data":{"db":{"host":"127.0.0.1","port":3306}}}'
+    return 0
+  fi
+
+  if [[ "$key" == *notfound* ]]; then
+    echo '{"error":"NoSuchKey"}' >&2
+    return 1
+  fi
+
+  if [[ "$key" == *error* ]]; then
+    echo '{"error":"InternalError"}' >&2
+    return 2
+  fi
+
+  echo '{"bucket":"'"$bucket"'","key":"'"$key"'","data":{}}'
 }
 
 mock_redis_get() {
@@ -70,17 +51,16 @@ mock_redis_get() {
   log "REDIS GET $key"
   sleep_if_needed
 
-  case "$key" in
-    "user:1")
-      echo '{"id":1,"name":"alice"}'
-      ;;
-    "missing")
-      return 1
-      ;;
-    *)
-      echo '{}'
-      ;;
-  esac
+  if [[ "$key" == "user:1" ]]; then
+    echo '{"id":1,"name":"alice"}'
+    return 0
+  fi
+
+  if [[ "$key" == "missing" ]]; then
+    return 1
+  fi
+
+  echo '{}'
 }
 
 mock_http_get() {
@@ -90,18 +70,17 @@ mock_http_get() {
   log "HTTP GET $url"
   sleep_if_needed
 
-  case "$url" in
-    *"/health"*)
-      echo '{"status":"ok"}'
-      ;;
-    *"/fail"*)
-      echo '{"error":"500"}' >&2
-      return 1
-      ;;
-    *)
-      echo '{"message":"ok"}'
-      ;;
-  esac
+  if [[ "$url" == *"/health"* ]]; then
+    echo '{"status":"ok"}'
+    return 0
+  fi
+
+  if [[ "$url" == *"/fail"* ]]; then
+    echo '{"error":"500"}' >&2
+    return 1
+  fi
+
+  echo '{"message":"ok"}'
 }
 
 s3_get() {
