@@ -17,31 +17,19 @@ normalize() {
 }
 
 mock_s3_get() {
-  local bucket
-  local key
+  local bucket="$1"
+  local key="$2"
 
-  bucket=$(normalize "${1:-}")
-  key=$(normalize "${2:-}")
+  echo "DEBUG key=[$key]" >&2
 
-  log "S3 GET s3://$bucket/$key"
-  sleep_if_needed
+  echo "[MOCK] S3 GET s3://$bucket/$key" >&2
+
+  echo "FORCE OUTPUT"  
 
   if [[ "$key" == "config/app.json" ]]; then
-    echo '{"env":"dev","service":"demo","data":{"db":{"host":"127.0.0.1","port":3306}}}'
+    echo '{"ok":true}'
     return 0
   fi
-
-  if [[ "$key" == "notfound" ]]; then
-    echo '{"error":"NoSuchKey"}'
-    return 1
-  fi
-
-  if [[ "$key" == "error" ]]; then
-    echo '{"error":"InternalError"}'
-    return 2
-  fi
-
-  echo '{"bucket":"'"$bucket"'","key":"'"$key"'","data":{}}'
 }
 
 mock_redis_get() {
