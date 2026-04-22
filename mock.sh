@@ -5,23 +5,30 @@ MOCK_DELAY=${MOCK_DELAY:-0}
 MOCK_VERBOSE=${MOCK_VERBOSE:-1}
 
 log() {
-  [[ "$MOCK_VERBOSE" == "1" ]] && echo "[MOCK] $*"
+  [[ "$MOCK_VERBOSE" == "1" ]] && echo "[MOCK] $*" >&2
 }
 
 sleep_if_needed() {
   [[ "$MOCK_DELAY" -gt 0 ]] && sleep "$MOCK_DELAY"
 }
 
+normalize() {
+  echo "$1" | tr -d '\r\n '
+}
+
 mock_s3_get() {
-  local bucket=$1
-  local key=$2
+  local bucket
+  local key
+
+  bucket=$(normalize "${1:-}")
+  key=$(normalize "${2:-}")
 
   log "S3 GET s3://$bucket/$key"
   sleep_if_needed
 
   case "$key" in
     "config/app.json")
-      cat <<EOF
+cat <<EOF
 {
   "env": "dev",
   "service": "demo",
@@ -44,19 +51,21 @@ EOF
       return 2
       ;;
     *)
-      cat <<EOF
+cat <<EOF
 {
   "bucket": "$bucket",
   "key": "$key",
   "data": {}
 }
 EOF
+      return 0
       ;;
   esac
 }
 
 mock_redis_get() {
-  local key=$1
+  local key
+  key=$(normalize "${1:-}")
 
   log "REDIS GET $key"
   sleep_if_needed
@@ -75,7 +84,8 @@ mock_redis_get() {
 }
 
 mock_http_get() {
-  local url=$1
+  local url
+  url=$(normalize "${1:-}")
 
   log "HTTP GET $url"
   sleep_if_needed
@@ -109,18 +119,20 @@ http_get() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
     s3)
-      s3_get "$2" "$3"
+      s3_get "${2:-}" "${3:-}"
       ;;
     redis)
-      redis_get "$2"
+      redis_get "${2:-}"
       ;;
     http)
-      http_get "$2"
+      http_get "${2:-}"
       ;;
     *)
-      echo "s3 <bucket> <key>"
-      echo "redis <key>"
-      echo "http <url>"
+      echo "Usage:"
+      echo "  $0 s3 <bucket> <key>"
+      echo "  $0 redis <key>"
+      echo "  $0 http <url>"
+      exit 1
       ;;
   esac
 fi
