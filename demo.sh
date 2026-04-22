@@ -1,45 +1,117 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-#####################################
-# 基础信息
-#####################################
-TRACE_ID=$(uuidgen)
-NOW=$(date -Iseconds)
-HOST=$(hostname)
+MOCK_DELAY=${MOCK_DELAY:-0}
+MOCK_VERBOSE=${MOCK_VERBOSE:-1}
 
-OUTPUT_DIR="./output"
-OUTPUT_FILE="${OUTPUT_DIR}/result.txt"
-
-#####################################
-# 日志函数（结构化）
-#####################################
 log() {
-  local level=$1
-  local msg=$2
-
-  echo "{\"time\":\"$(date -Iseconds)\",\"level\":\"$level\",\"trace_id\":\"$TRACE_ID\",\"msg\":\"$msg\"}"
+  [[ "$MOCK_VERBOSE" == "1" ]] && echo "[MOCK] $*" >&2
 }
 
-#####################################
-# 主流程
-#####################################
-main() {
-
-  log "INFO" "Start demo job"
-
-  mkdir -p "$OUTPUT_DIR"
-
-  echo "Run Time: $NOW" >> "$OUTPUT_FILE"
-  echo "Host: $HOST" >> "$OUTPUT_FILE"
-  echo "TraceID: $TRACE_ID" >> "$OUTPUT_FILE"
-  echo "------------------------" >> "$OUTPUT_FILE"
-
-  sleep 2
-
-  log "INFO" "Write result to $OUTPUT_FILE"
-
-  log "INFO" "Done"
+sleep_if_needed() {
+  [[ "$MOCK_DELAY" -gt 0 ]] && sleep "$MOCK_DELAY"
 }
 
-main
+normalize() {
+  echo "$1" | tr -d '\r\n\t '
+}
+
+mock_s3_get() {
+  local bucket
+  local key
+
+  bucket=$(normalize "${1:-}")
+  key=$(normalize "${2:-}")
+
+  log "S3 GET s3://$bucket/$key"
+  sleep_if_needed
+
+  if [[ "$key" == *config/app.json* ]]; then
+    echo '{"env":"dev","service":"demo","data":{"db":{"host":"127.0.0.1","port":3306}}}'
+    return 0
+  fi
+
+  if [[ "$key" == *notfound* ]]; then
+    echo '{"error":"NoSuchKey"}' >&2
+    return 1
+  fi
+
+  if [[ "$key" == *error* ]]; then
+    echo '{"error":"InternalError"}' >&2
+    return 2
+  fi
+
+  echo '{"bucket":"'"$bucket"'","key":"'"$key"'","data":{}}'
+}
+
+mock_redis_get() {
+  local key
+  key=$(normalize "${1:-}")
+
+  log "REDIS GET $key"
+  sleep_if_needed
+
+  if [[ "$key" == "user:1" ]]; then
+    echo '{"id":1,"name":"alice"}'
+    return 0
+  fi
+
+  if [[ "$key" == "missing" ]]; then
+    return 1
+  fi
+
+  echo '{}'
+}
+
+mock_http_get() {
+  local url
+  url=$(normalize "${1:-}")
+
+  log "HTTP GET $url"
+  sleep_if_needed
+
+  if [[ "$url" == *"/health"* ]]; then
+    echo '{"status":"ok"}'
+    return 0
+  fi
+
+  if [[ "$url" == *"/fail"* ]]; then
+    echo '{"error":"500"}' >&2
+    return 1
+  fi
+
+  echo '{"message":"ok"}'
+}
+
+s3_get() {
+  mock_s3_get "$1" "$2"
+}
+
+redis_get() {
+  mock_redis_get "$1"
+}
+
+http_get() {
+  mock_http_get "$1"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    s3)
+      s3_get "${2:-}" "${3:-}"
+      ;;
+    redis)
+      redis_get "${2:-}"
+      ;;
+    http)
+      http_get "${2:-}"
+      ;;
+    *)
+      echo "Usage:"
+      echo "  $0 s3 <bucket> <key>"
+      echo "  $0 redis <key>"
+      echo "  $0 http <url>"
+      exit 1
+      ;;
+  esac
+fi
