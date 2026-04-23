@@ -10,14 +10,13 @@ LOCK_TABLE=""
 LOCK_TTL=300
 DRY_RUN=0
 DEBUG="${DEBUG:-0}"
+
 ENV=""
 NAME=""
 AMI=""
 TYPE=""
 SG=""
 SUBNET=""
-KEY_NAME=""
-TAGS=()
 
 [[ "$DEBUG" == "1" ]] && set -x
 
@@ -28,6 +27,7 @@ log() {
   ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   echo "{\"ts\":\"$ts\",\"level\":\"$level\",\"app\":\"$APP_NAME\",\"msg\":\"$msg\"}" | tee -a "$LOG_FILE" >&2
 }
+
 info(){ log INFO "$@"; }
 warn(){ log WARN "$@"; }
 error(){ log ERROR "$@"; }
@@ -59,11 +59,6 @@ while [[ $# -gt 0 ]]; do
     --sg) SG="$2"; shift 2;;
     --subnet) SUBNET="$2"; shift 2;;
     --region) REGION="$2"; shift 2;;
-    --profile) PROFILE="$2"; shift 2;;
-    --key) KEY_NAME="$2"; shift 2;;
-    --tag) TAGS+=("$2"); shift 2;;
-    --lock-table) LOCK_TABLE="$2"; shift 2;;
-    --lock-ttl) LOCK_TTL="$2"; shift 2;;
     --dry-run) DRY_RUN=1; shift;;
     --debug) DEBUG=1; set -x; shift;;
     *) usage;;
@@ -74,12 +69,8 @@ done
 [[ -z "$REGION" ]] && json_error "NO_REGION" "region is required"
 
 AWS_ARGS=(--region "$REGION")
-[[ -n "$PROFILE" ]] && AWS_ARGS+=(--profile "$PROFILE")
 
-req_id=$(uuidgen 2>/dev/null || date +%s)
-LOCK_KEY="ec2:${ENV}:${NAME}"
-LOCK_OWNER="${APP_NAME}-${req_id}"
-LOCK_EXPIRES=$(( $(date +%s) + LOCK_TTL ))
+req_id=$(date +%s)
 
 retry() {
   local max=5 delay=1 i=1
@@ -91,35 +82,6 @@ retry() {
     i=$(( i + 1 ))
   done
 }
-
-acquire_lock() {
-  [[ -z "$LOCK_TABLE" ]] && return 0
-  $AWS_CMD "${AWS_ARGS[@]}" dynamodb put-item \
-    --table-name "$LOCK_TABLE" \
-    --item "{
-      \"LockID\": {\"S\": \"$LOCK_KEY\"},
-      \"Owner\": {\"S\": \"$LOCK_OWNER\"},
-      \"Expires\": {\"N\": \"$LOCK_EXPIRES\"}
-    }" \
-    --condition-expression "attribute_not_exists(LockID) OR Expires < :now" \
-    --expression-attribute-values "{\":now\":{\"N\":\"$(date +%s)\"}}"
-}
-
-release_lock() {
-  [[ -z "$LOCK_TABLE" ]] && return 0
-  $AWS_CMD "${AWS_ARGS[@]}" dynamodb delete-item \
-    --table-name "$LOCK_TABLE" \
-    --key "{\"LockID\":{\"S\":\"$LOCK_KEY\"}}" \
-    --condition-expression "Owner = :o" \
-    --expression-attribute-values "{\":o\":{\"S\":\"$LOCK_OWNER\"}}" >/dev/null 2>&1 || true
-}
-
-trap release_lock EXIT
-
-if [[ -n "$LOCK_TABLE" ]]; then
-  info "acquire lock $LOCK_KEY"
-  retry acquire_lock || json_error "LOCK_FAILED" "cannot acquire lock"
-fi
 
 info "check instance name=$NAME"
 
@@ -140,33 +102,20 @@ fi
 
 info "create instance"
 
-TAG_JSON="[{Key=Name,Value=$NAME},{Key=Env,Value=$ENV},{Key=ManagedBy,Value=ec2.sh}]"
-for kv in "${TAGS[@]}"; do
-  k="${kv%%=*}"; v="${kv#*=}"
-  TAG_JSON="${TAG_JSON%,} ,{Key=$k,Value=$v}]"
-done
-
-RUN_ARGS=(
-  ec2 run-instances
-  --image-id "$AMI"
-  --instance-type "$TYPE"
-  --subnet-id "$SUBNET"
-  --security-group-ids "$SG"
-  --tag-specifications "ResourceType=instance,Tags=${TAG_JSON}"
-  --query "Instances[0].InstanceId"
-  --output text
-)
-[[ -n "$KEY_NAME" ]] && RUN_ARGS+=(--key-name "$KEY_NAME")
-
-INSTANCE_ID=$(retry $AWS_CMD "${AWS_ARGS[@]}" "${RUN_ARGS[@]}") \
-  || json_error "CREATE_FAILED" "run-instances failed"
+INSTANCE_ID=$(retry $AWS_CMD "${AWS_ARGS[@]}" ec2 run-instances \
+  --image-id "$AMI" \
+  --instance-type "$TYPE" \
+  --subnet-id "$SUBNET" \
+  --security-group-ids "$SG" \
+  --query "Instances[0].InstanceId" \
+  --output text) || json_error "CREATE_FAILED" "run-instances failed"
 
 retry $AWS_CMD "${AWS_ARGS[@]}" ec2 wait instance-running --instance-ids "$INSTANCE_ID" \
   || json_error "WAIT_FAILED" "instance not running"
 
-read -r PUBLIC_IP PRIVATE_IP <<<"$($AWS_CMD "${AWS_ARGS[@]}" ec2 describe-instances \
+PUBLIC_IP=$($AWS_CMD "${AWS_ARGS[@]}" ec2 describe-instances \
   --instance-ids "$INSTANCE_ID" \
-  --query "Reservations[0].Instances[0].[PublicIpAddress,PrivateIpAddress]" \
-  --output text)"
+  --query "Reservations[0].Instances[0].PublicIpAddress" \
+  --output text)
 
-json_exit "created" ",\"instance_id\":\"$INSTANCE_ID\",\"public_ip\":\"$PUBLIC_IP\",\"private_ip\":\"$PRIVATE_IP\",\"req_id\":\"$req_id\""
+json_exit "created" ",\"instance_id\":\"$INSTANCE_ID\",\"public_ip\":\"$PUBLIC_IP\",\"req_id\":\"$req_id\""
