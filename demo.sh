@@ -1,120 +1,95 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MOCK_DELAY=${MOCK_DELAY:-0}
-MOCK_VERBOSE=${MOCK_VERBOSE:-1}
+########################################
+# CONFIG
+########################################
+API="./api.sh"
 
+BASE_VPC="vpc-1"
+BASE_IGW="igw-1"
+
+########################################
+# LOG
+########################################
 log() {
-  [[ "$MOCK_VERBOSE" == "1" ]] && echo "[MOCK] $*" >&2
+  echo "[IGW] $*"
 }
 
-sleep_if_needed() {
-  [[ "$MOCK_DELAY" -gt 0 ]] && sleep "$MOCK_DELAY"
+########################################
+# SAFE RUN API
+########################################
+run_api() {
+  "$API" "$@"
 }
 
-normalize() {
-  echo "$1" | tr -d '\r\n\t '
-}
+########################################
+# INPUT
+########################################
+RESOURCE="${1:-}"
+ACTION="${2:-}"
 
-mock_s3_get() {
-  local bucket
-  local key
+########################################
+# HELP CHECK
+########################################
+if [[ -z "$RESOURCE" || -z "$ACTION" ]]; then
+  echo "Usage:"
+  echo "  ./IGW.sh vpc create"
+  echo "  ./IGW.sh igw create"
+  echo "  ./IGW.sh igw get"
+  exit 1
+fi
 
-  bucket=$(normalize "${1:-}")
-  key=$(normalize "${2:-}")
+########################################
+# VPC LOGIC
+########################################
+if [[ "$RESOURCE" == "vpc" ]]; then
 
-  log "S3 GET s3://$bucket/$key"
-  sleep_if_needed
-
-  if [[ "$key" == "config/app.json" ]]; then
-    echo '{"env":"dev","service":"demo","data":{"db":{"host":"127.0.0.1","port":3306}}}'
-    return 0
+  if [[ "$ACTION" == "create" ]]; then
+    log "CREATE VPC: $BASE_VPC"
+    run_api create vpc key="$BASE_VPC"
+  elif [[ "$ACTION" == "get" ]]; then
+    run_api get vpc key="$BASE_VPC"
+  elif [[ "$ACTION" == "list" ]]; then
+    run_api list vpc
+  else
+    echo "UNKNOWN ACTION FOR VPC"
+    exit 1
   fi
 
-  if [[ "$key" == "notfound" ]]; then
-    echo '{"error":"NoSuchKey"}'
-    return 1
+########################################
+# IGW LOGIC
+########################################
+elif [[ "$RESOURCE" == "igw" ]]; then
+
+  if [[ "$ACTION" == "create" ]]; then
+    log "CREATE IGW: $BASE_IGW"
+
+    # 自动确保 VPC 存在（关键优化）
+    run_api create vpc key="$BASE_VPC" || true
+
+    run_api create igw key="$BASE_IGW" vpc="$BASE_VPC"
+
+  elif [[ "$ACTION" == "get" ]]; then
+    run_api get igw key="$BASE_IGW"
+
+  elif [[ "$ACTION" == "list" ]]; then
+    run_api list igw
+
+  elif [[ "$ACTION" == "delete" ]]; then
+    run_api delete igw key="$BASE_IGW"
+
+  else
+    echo "UNKNOWN ACTION FOR IGW"
+    exit 1
   fi
 
-  if [[ "$key" == "error" ]]; then
-    echo '{"error":"InternalError"}'
-    return 2
-  fi
+else
+  echo "UNKNOWN RESOURCE: $RESOURCE"
+  exit 1
+fi
 
-  echo '{"bucket":"'"$bucket"'","key":"'"$key"'","data":{}}'
-}
-
-mock_redis_get() {
-  local key
-  key=$(normalize "${1:-}")
-
-  log "REDIS GET $key"
-  sleep_if_needed
-
-  if [[ "$key" == "user:1" ]]; then
-    echo '{"id":1,"name":"alice"}'
-    return 0
-  fi
-
-  if [[ "$key" == "missing" ]]; then
-    echo '{"error":"not_found"}'
-    return 1
-  fi
-
-  echo '{}'
-}
-
-mock_http_get() {
-  local url
-  url=$(normalize "${1:-}")
-
-  log "HTTP GET $url"
-  sleep_if_needed
-
-  if [[ "$url" == *"/health"* ]]; then
-    echo '{"status":"ok"}'
-    return 0
-  fi
-
-  if [[ "$url" == *"/fail"* ]]; then
-    echo '{"error":"500"}'
-    return 1
-  fi
-
-  echo '{"message":"ok"}'
-}
-
-s3_get() {
-  mock_s3_get "$1" "$2"
-}
-
-redis_get() {
-  mock_redis_get "$1"
-}
-
-http_get() {
-  mock_http_get "$1"
-}
-
-main() {
-  case "${1:-}" in
-    s3)
-      s3_get "${2:-}" "${3:-}"
-      ;;
-    redis)
-      redis_get "${2:-}"
-      ;;
-    http)
-      http_get "${2:-}"
-      ;;
-    *)
-      echo "Usage:"
-      echo "  $0 s3 <bucket> <key>"
-      echo "  $0 redis <key>"
-      echo "  $0 http <url>"
-      exit 1
-      ;;
-  esac
-}
-
-main "$@"
+########################################
+# DONE
+########################################
+log "DONE"
