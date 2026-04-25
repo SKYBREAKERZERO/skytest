@@ -22,7 +22,7 @@ ACTION="${2:-}"
 shift 2 || true
 
 ########################################
-# PARAMS PARSE（稳定版）
+# PARAM PARSER（100%稳定）
 ########################################
 declare -A PARAMS=()
 
@@ -37,20 +37,10 @@ for arg in "$@"; do
 done
 
 ########################################
-# JSON RESPONSE
+# JSON BUILDER（避免 here-doc）
 ########################################
 json() {
-  echo "{
-  \"meta\": {
-    \"code\": $1,
-    \"status\": \"$2\",
-    \"message\": \"$3\",
-    \"trace_id\": \"$TRACE_ID\",
-    \"request_id\": \"$REQUEST_ID\",
-    \"timestamp\": \"$(date -Iseconds)\"
-  },
-  \"data\": $4
-}"
+  echo "{\"meta\":{\"code\":$1,\"status\":\"$2\",\"message\":\"$3\",\"trace_id\":\"$TRACE_ID\",\"request_id\":\"$REQUEST_ID\",\"timestamp\":\"$(date -Iseconds)\"},\"data\":$4}"
 }
 
 ok() {
@@ -63,7 +53,7 @@ err() {
 }
 
 ########################################
-# SCHEMA VALIDATION
+# SCHEMA CHECK
 ########################################
 require() {
   [[ -z "${PARAMS[$1]:-}" ]] && err 400 "missing_param:$1"
@@ -81,14 +71,16 @@ igw_file() { echo "$DATA_DIR/igw_$1.json"; }
 vpc_create() {
   require key
   local key="${PARAMS[key]}"
-  local f=$(vpc_file "$key")
+  local f
+  f=$(vpc_file "$key")
 
   if [[ -f "$f" ]]; then
     ok "idempotent_hit" "$(cat "$f")"
     return
   fi
 
-  local data="{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}"
+  local data
+  data="{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}"
   echo "$data" > "$f"
 
   ok "created" "$data"
@@ -96,7 +88,8 @@ vpc_create() {
 
 vpc_get() {
   require key
-  local f=$(vpc_file "${PARAMS[key]}")
+  local f
+  f=$(vpc_file "${PARAMS[key]}")
 
   [[ ! -f "$f" ]] && err 404 "vpc_not_found"
 
@@ -105,7 +98,8 @@ vpc_get() {
 
 vpc_delete() {
   require key
-  local f=$(vpc_file "${PARAMS[key]}")
+  local f
+  f=$(vpc_file "${PARAMS[key]}")
 
   [[ ! -f "$f" ]] && err 404 "vpc_not_found"
 
@@ -114,6 +108,8 @@ vpc_delete() {
 }
 
 vpc_list() {
+  shopt -s nullglob
+
   local arr="["
   local first=true
 
@@ -143,18 +139,22 @@ igw_create() {
 
   local key="${PARAMS[key]}"
   local vpc="${PARAMS[vpc]}"
-  local vf=$(vpc_file "$vpc")
+
+  local vf
+  vf=$(vpc_file "$vpc")
 
   [[ ! -f "$vf" ]] && err 404 "vpc_not_found"
 
-  local f=$(igw_file "$key")
+  local f
+  f=$(igw_file "$key")
 
   if [[ -f "$f" ]]; then
     ok "idempotent_hit" "$(cat "$f")"
     return
   fi
 
-  local data="{\"resource\":\"igw\",\"key\":\"$key\",\"vpc\":\"$vpc\",\"state\":\"ATTACHED\"}"
+  local data
+  data="{\"resource\":\"igw\",\"key\":\"$key\",\"vpc\":\"$vpc\",\"state\":\"ATTACHED\"}"
   echo "$data" > "$f"
 
   ok "created" "$data"
@@ -162,7 +162,8 @@ igw_create() {
 
 igw_get() {
   require key
-  local f=$(igw_file "${PARAMS[key]}")
+  local f
+  f=$(igw_file "${PARAMS[key]}")
 
   [[ ! -f "$f" ]] && err 404 "igw_not_found"
 
@@ -171,7 +172,8 @@ igw_get() {
 
 igw_delete() {
   require key
-  local f=$(igw_file "${PARAMS[key]}")
+  local f
+  f=$(igw_file "${PARAMS[key]}")
 
   [[ ! -f "$f" ]] && err 404 "igw_not_found"
 
@@ -180,14 +182,24 @@ igw_delete() {
 }
 
 igw_list() {
-  local arr="["
+  shopt -s nullglob
 
-  for f in "$DATA_DIR"/igw_*.json 2>/dev/null; do
+  local arr="["
+  local first=true
+
+  for f in "$DATA_DIR"/igw_*.json; do
     [[ ! -f "$f" ]] && continue
-    arr+="$(cat "$f"),"
+
+    if [[ "$first" == true ]]; then
+      first=false
+    else
+      arr+=","
+    fi
+
+    arr+="$(cat "$f")"
   done
 
-  arr="${arr%,}]"
+  arr+="]"
 
   ok "list" "$arr"
 }
