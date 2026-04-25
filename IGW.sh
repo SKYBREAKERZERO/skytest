@@ -3,9 +3,6 @@ set -euo pipefail
 
 API="./api.sh"
 
-BASE_VPC="vpc-1"
-BASE_IGW="igw-1"
-
 log() {
   echo "[IGW] $*"
 }
@@ -14,47 +11,39 @@ run() {
   "$API" "$@"
 }
 
-RESOURCE="${1:-}"
-ACTION="${2:-}"
-
-case "$RESOURCE" in
+case "${1:-}" in
 
   vpc)
-    case "$ACTION" in
+    case "${2:-}" in
       create)
-        log "CREATE VPC $BASE_VPC"
-        run vpc create key="$BASE_VPC"
+        log "CREATE VPC vpc-1"
+        run vpc create key=vpc-1
         ;;
       get)
-        run vpc get key="$BASE_VPC"
+        run vpc get key=vpc-1
         ;;
       *)
-        echo "Usage: ./IGW.sh vpc create|get"
-        exit 1
+        echo "usage: vpc create|get"
         ;;
     esac
     ;;
 
   igw)
-    case "$ACTION" in
+    case "${2:-}" in
       create)
-        log "CREATE IGW $BASE_IGW (vpc=$BASE_VPC)"
-        run igw create key="$BASE_IGW" vpc="$BASE_VPC"
+        log "CREATE IGW igw-1"
+        run igw create key=igw-1 vpc=vpc-1
         ;;
       get)
-        run igw get key="$BASE_IGW"
+        run igw get key=igw-1
         ;;
       *)
-        echo "Usage: ./IGW.sh igw create|get"
-        exit 1
+        echo "usage: igw create|get"
         ;;
     esac
     ;;
 
   *)
-    echo "Usage:"
-    echo "  ./IGW.sh vpc create|get"
-    echo "  ./IGW.sh igw create|get"
-    exit 1
+    echo "usage: vpc|igw create|get"
     ;;
 esac
