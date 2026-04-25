@@ -7,24 +7,15 @@ set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DB_DIR="$BASE_DIR/.mockdb"
 DATA_DIR="$DB_DIR/data"
-IDEM_DIR="$DB_DIR/idem"
 LOG_DIR="$BASE_DIR/logs"
 
-mkdir -p "$DATA_DIR" "$IDEM_DIR" "$LOG_DIR"
+mkdir -p "$DATA_DIR" "$LOG_DIR"
 
 ########################################
-# TRACE / REQUEST (企业级)
+# TRACE
 ########################################
-generate_trace_id() {
-  command -v uuidgen >/dev/null 2>&1 && uuidgen || date +%s%N
-}
-
-generate_request_id() {
-  echo "req-$(date +%s%N)-$RANDOM"
-}
-
-TRACE_ID="${TRACE_ID:-$(generate_trace_id)}"
-REQUEST_ID="${REQUEST_ID:-$(generate_request_id)}"
+TRACE_ID="${TRACE_ID:-$(uuidgen 2>/dev/null || date +%s%N)}"
+REQUEST_ID="${REQUEST_ID:-req-$(date +%s%N)-$RANDOM}"
 
 ########################################
 # INPUT
@@ -33,18 +24,10 @@ RESOURCE="${1:-}"
 ACTION="${2:-}"
 shift 2 || true
 
-DRY_RUN=false
 declare -A PARAMS=()
 
-########################################
-# PARSER（安全版）
-########################################
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run)
-      DRY_RUN=true
-      shift
-      ;;
     *=*)
       k="${1%%=*}"
       v="${1#*=}"
@@ -58,14 +41,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 ########################################
-# LOG
-########################################
-audit_log() {
-  echo "$(date -Iseconds) trace=$TRACE_ID request=$REQUEST_ID action=$ACTION resource=$RESOURCE params=$*" \
-    >> "$LOG_DIR/api.log"
-}
-
-########################################
 # JSON
 ########################################
 json() {
@@ -74,122 +49,120 @@ json() {
   local msg=$3
   local data=${4:-null}
 
-  cat <<EOF
-{
-  "meta": {
-    "code": $code,
-    "status": "$status",
-    "message": "$msg",
-    "trace_id": "$TRACE_ID",
-    "request_id": "$REQUEST_ID",
-    "timestamp": "$(date -Iseconds)"
+  echo "{
+  \"meta\": {
+    \"code\": $code,
+    \"status\": \"$status\",
+    \"message\": \"$msg\",
+    \"trace_id\": \"$TRACE_ID\",
+    \"request_id\": \"$REQUEST_ID\",
+    \"timestamp\": \"$(date -Iseconds)\"
   },
-  "data": $data
-}
-EOF
+  \"data\": $data
+}"
 }
 
 success() { json 0 "SUCCESS" "$1" "${2:-null}"; }
-error() { json 1 "ERROR" "$2" null; exit 1; }
+error() { json 400 "ERROR" "$2" null; exit 1; }
 
 ########################################
-# CORE
+# SCHEMA（核心新增）
 ########################################
-require_param() {
-  local v="${PARAMS[$1]:-}"
-  [[ -z "$v" ]] && error 1000 "missing param: $1"
+declare -A SCHEMA_VPC_CREATE=(
+  [key]="required"
+)
+
+declare -A SCHEMA_IGW_CREATE=(
+  [key]="required"
+  [vpc]="required"
+)
+
+validate_schema() {
+  local schema_name=$1
+  local key req
+
+  declare -n schema="$schema_name"
+
+  for key in "${!schema[@]}"; do
+    req="${schema[$key]}"
+
+    if [[ "$req" == "required" ]]; then
+      if [[ -z "${PARAMS[$key]:-}" ]]; then
+        error 1000 "missing required param: $key"
+      fi
+    fi
+  done
 }
 
-resource_file() {
-  echo "$DATA_DIR/${RESOURCE}_$1.json"
-}
+########################################
+# HELPERS
+########################################
+file_vpc() { echo "$DATA_DIR/vpc_$1.json"; }
+file_igw() { echo "$DATA_DIR/igw_$1.json"; }
 
 ########################################
 # VPC
 ########################################
 vpc_create() {
-  require_param key
+  validate_schema SCHEMA_VPC_CREATE
+
   local key="${PARAMS[key]}"
-  local file=$(resource_file "$key")
+  local file=$(file_vpc "$key")
 
-  [[ -f "$file" ]] && error 1002 "vpc already exists"
+  [[ -f "$file" ]] && error 1002 "VPC exists"
 
-  local data="{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}"
+  echo "{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}" > "$file"
 
-  [[ "$DRY_RUN" == true ]] && success "dry-run vpc" "$data" && return
-
-  echo "$data" > "$file"
-  success "VPC created" "$data"
+  success "VPC created" "{\"key\":\"$key\"}"
 }
 
 vpc_get() {
-  require_param key
-  local file=$(resource_file "${PARAMS[key]}")
-  [[ ! -f "$file" ]] && error 1001 "vpc not found"
-  success "ok" "$(cat "$file")"
-}
+  local key="${PARAMS[key]:-}"
+  [[ -z "$key" ]] && error 1000 "missing key"
 
-vpc_list() {
-  ls "$DATA_DIR"/vpc_*.json 2>/dev/null \
-    | awk -F'[_.]' '{print "{\"key\":\""$2"\"}"}' \
-    | jq -s '.'
+  local file=$(file_vpc "$key")
+  [[ ! -f "$file" ]] && error 1001 "VPC not found"
+
+  success "OK" "$(cat "$file")"
 }
 
 ########################################
 # IGW
 ########################################
 igw_create() {
-  require_param key
-  require_param vpc
+  validate_schema SCHEMA_IGW_CREATE
 
   local key="${PARAMS[key]}"
   local vpc="${PARAMS[vpc]}"
 
-  local vpc_file="$DATA_DIR/vpc_${vpc}.json"
-  [[ ! -f "$vpc_file" ]] && error 1001 "VPC not found"
+  [[ ! -f "$(file_vpc "$vpc")" ]] && error 1001 "VPC not found"
 
-  # safe duplicate check
-  if ls "$DATA_DIR"/igw_*.json >/dev/null 2>&1; then
-    if grep -q "\"vpc\":\"$vpc\"" "$DATA_DIR"/igw_*.json 2>/dev/null; then
-      error 1002 "IGW already exists for VPC"
-    fi
-  fi
+  local file=$(file_igw "$key")
 
-  local file=$(resource_file "$key")
+  echo "{\"resource\":\"igw\",\"key\":\"$key\",\"vpc\":\"$vpc\",\"state\":\"ATTACHED\"}" > "$file"
 
-  local data="{\"resource\":\"igw\",\"key\":\"$key\",\"vpc\":\"$vpc\",\"state\":\"ATTACHED\"}"
-
-  [[ "$DRY_RUN" == true ]] && success "dry-run igw" "$data" && return
-
-  echo "$data" > "$file"
-  success "IGW created" "$data"
+  success "IGW created" "{\"key\":\"$key\",\"vpc\":\"$vpc\"}"
 }
 
 igw_get() {
-  require_param key
-  local file=$(resource_file "${PARAMS[key]}")
-  [[ ! -f "$file" ]] && error 1001 "igw not found"
-  success "ok" "$(cat "$file")"
-}
+  local key="${PARAMS[key]:-}"
+  [[ -z "$key" ]] && error 1000 "missing key"
 
-igw_list() {
-  ls "$DATA_DIR"/igw_*.json 2>/dev/null \
-    | awk -F'[_.]' '{print "{\"key\":\""$2"\"}"}' \
-    | jq -s '.'
+  local file=$(file_igw "$key")
+  [[ ! -f "$file" ]] && error 1001 "IGW not found"
+
+  success "OK" "$(cat "$file")"
 }
 
 ########################################
 # ROUTER
 ########################################
-audit_log "$@"
-
 case "$RESOURCE" in
   vpc)
     case "$ACTION" in
       create) vpc_create ;;
       get) vpc_get ;;
-      list) vpc_list ;;
-      *) error 1000 "invalid vpc action" ;;
+      *) error 400 "invalid vpc action" ;;
     esac
     ;;
 
@@ -197,12 +170,11 @@ case "$RESOURCE" in
     case "$ACTION" in
       create) igw_create ;;
       get) igw_get ;;
-      list) igw_list ;;
-      *) error 1000 "invalid igw action" ;;
+      *) error 400 "invalid igw action" ;;
     esac
     ;;
 
   *)
-    error 1000 "unknown resource"
+    error 400 "unknown resource"
     ;;
 esac
