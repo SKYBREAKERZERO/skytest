@@ -1,100 +1,212 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATA_DIR=".mockdb/data"
+########################################
+# BASE
+########################################
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+DATA_DIR="$BASE_DIR/.mockdb/data"
 mkdir -p "$DATA_DIR"
 
-TRACE_ID="${TRACE_ID:-trace-$RANDOM}"
-REQUEST_ID="${REQUEST_ID:-req-$RANDOM}"
+########################################
+# TRACE / REQUEST
+########################################
+TRACE_ID="${TRACE_ID:-trace-$(date +%s%N)}"
+REQUEST_ID="${REQUEST_ID:-req-$(date +%s%N)}"
 
+########################################
+# INPUT
+########################################
 RESOURCE="${1:-}"
 ACTION="${2:-}"
 shift 2 || true
 
+########################################
+# PARAMS PARSE（稳定版）
+########################################
 declare -A PARAMS=()
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
+for arg in "$@"; do
+  case "$arg" in
     *=*)
-      k="${1%%=*}"
-      v="${1#*=}"
+      k="${arg%%=*}"
+      v="${arg#*=}"
       PARAMS["$k"]="$v"
-      shift
-      ;;
-    *)
-      shift
       ;;
   esac
 done
 
+########################################
+# JSON RESPONSE
+########################################
 json() {
-  echo "{\"meta\":{\"status\":\"SUCCESS\",\"message\":\"$2\",\"trace_id\":\"$TRACE_ID\",\"request_id\":\"$REQUEST_ID\"},\"data\":$3}"
+  echo "{
+  \"meta\": {
+    \"code\": $1,
+    \"status\": \"$2\",
+    \"message\": \"$3\",
+    \"trace_id\": \"$TRACE_ID\",
+    \"request_id\": \"$REQUEST_ID\",
+    \"timestamp\": \"$(date -Iseconds)\"
+  },
+  \"data\": $4
+}"
+}
+
+ok() {
+  json 200 "SUCCESS" "$1" "${2:-null}"
 }
 
 err() {
-  echo "{\"meta\":{\"status\":\"ERROR\",\"message\":\"$2\"},\"data\":null}"
+  json "$1" "ERROR" "$2" null
   exit 1
 }
 
+########################################
+# SCHEMA VALIDATION
+########################################
 require() {
-  [[ -z "${PARAMS[$1]:-}" ]] && err 400 "missing_$1"
+  [[ -z "${PARAMS[$1]:-}" ]] && err 400 "missing_param:$1"
 }
 
+########################################
+# FILE HELPERS
+########################################
+vpc_file() { echo "$DATA_DIR/vpc_$1.json"; }
+igw_file() { echo "$DATA_DIR/igw_$1.json"; }
+
+########################################
+# VPC
+########################################
 vpc_create() {
   require key
-  local k="${PARAMS[key]}"
-  local f="$DATA_DIR/vpc_$k.json"
+  local key="${PARAMS[key]}"
+  local f=$(vpc_file "$key")
 
-  [[ -f "$f" ]] && json 200 "idempotent" "$(cat "$f")" && return
+  if [[ -f "$f" ]]; then
+    ok "idempotent_hit" "$(cat "$f")"
+    return
+  fi
 
-  echo "{\"resource\":\"vpc\",\"key\":\"$k\"}" > "$f"
-  json 200 "created" "$(cat "$f")"
+  local data="{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}"
+  echo "$data" > "$f"
+
+  ok "created" "$data"
 }
 
 vpc_get() {
   require key
-  local f="$DATA_DIR/vpc_${PARAMS[key]}.json"
-  [[ ! -f "$f" ]] && err 404 "not_found"
-  json 200 "ok" "$(cat "$f")"
+  local f=$(vpc_file "${PARAMS[key]}")
+
+  [[ ! -f "$f" ]] && err 404 "vpc_not_found"
+
+  ok "ok" "$(cat "$f")"
 }
 
+vpc_delete() {
+  require key
+  local f=$(vpc_file "${PARAMS[key]}")
+
+  [[ ! -f "$f" ]] && err 404 "vpc_not_found"
+
+  rm -f "$f"
+  ok "deleted" null
+}
+
+vpc_list() {
+  local arr="["
+
+  for f in "$DATA_DIR"/vpc_*.json 2>/dev/null; do
+    [[ ! -f "$f" ]] && continue
+    arr+="$(cat "$f"),"
+  done
+
+  arr="${arr%,}]"
+
+  ok "list" "$arr"
+}
+
+########################################
+# IGW
+########################################
 igw_create() {
   require key
   require vpc
 
-  local k="${PARAMS[key]}"
-  local v="${PARAMS[vpc]}"
-  local f="$DATA_DIR/igw_$k.json"
+  local key="${PARAMS[key]}"
+  local vpc="${PARAMS[vpc]}"
+  local vf=$(vpc_file "$vpc")
 
-  [[ -f "$f" ]] && json 200 "idempotent" "$(cat "$f")" && return
+  [[ ! -f "$vf" ]] && err 404 "vpc_not_found"
 
-  echo "{\"resource\":\"igw\",\"key\":\"$k\",\"vpc\":\"$v\"}" > "$f"
-  json 200 "created" "$(cat "$f")"
+  local f=$(igw_file "$key")
+
+  if [[ -f "$f" ]]; then
+    ok "idempotent_hit" "$(cat "$f")"
+    return
+  fi
+
+  local data="{\"resource\":\"igw\",\"key\":\"$key\",\"vpc\":\"$vpc\",\"state\":\"ATTACHED\"}"
+  echo "$data" > "$f"
+
+  ok "created" "$data"
 }
 
 igw_get() {
   require key
-  local f="$DATA_DIR/igw_${PARAMS[key]}.json"
-  [[ ! -f "$f" ]] && err 404 "not_found"
-  json 200 "ok" "$(cat "$f")"
+  local f=$(igw_file "${PARAMS[key]}")
+
+  [[ ! -f "$f" ]] && err 404 "igw_not_found"
+
+  ok "ok" "$(cat "$f")"
 }
 
+igw_delete() {
+  require key
+  local f=$(igw_file "${PARAMS[key]}")
+
+  [[ ! -f "$f" ]] && err 404 "igw_not_found"
+
+  rm -f "$f"
+  ok "deleted" null
+}
+
+igw_list() {
+  local arr="["
+
+  for f in "$DATA_DIR"/igw_*.json 2>/dev/null; do
+    [[ ! -f "$f" ]] && continue
+    arr+="$(cat "$f"),"
+  done
+
+  arr="${arr%,}]"
+
+  ok "list" "$arr"
+}
+
+########################################
+# ROUTER
+########################################
 case "$RESOURCE" in
   vpc)
     case "$ACTION" in
       create) vpc_create ;;
       get) vpc_get ;;
-      *) err 400 "bad_action" ;;
+      delete) vpc_delete ;;
+      list) vpc_list ;;
+      *) err 400 "invalid_vpc_action" ;;
     esac
     ;;
   igw)
     case "$ACTION" in
       create) igw_create ;;
       get) igw_get ;;
-      *) err 400 "bad_action" ;;
+      delete) igw_delete ;;
+      list) igw_list ;;
+      *) err 400 "invalid_igw_action" ;;
     esac
     ;;
   *)
-    err 400 "bad_resource"
+    err 400 "unknown_resource"
     ;;
 esac
