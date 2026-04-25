@@ -1,25 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-########################################
-# BASE
-########################################
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-DB_DIR="$BASE_DIR/.mockdb"
-DATA_DIR="$DB_DIR/data"
-LOG_DIR="$BASE_DIR/logs"
+DATA_DIR="$BASE_DIR/.mockdb/data"
 
-mkdir -p "$DATA_DIR" "$LOG_DIR"
+mkdir -p "$DATA_DIR"
 
-########################################
-# TRACE
-########################################
 TRACE_ID="${TRACE_ID:-$(uuidgen 2>/dev/null || date +%s%N)}"
 REQUEST_ID="${REQUEST_ID:-req-$(date +%s%N)-$RANDOM}"
 
-########################################
-# INPUT
-########################################
 RESOURCE="${1:-}"
 ACTION="${2:-}"
 shift 2 || true
@@ -46,14 +35,14 @@ done
 json() {
   local code=$1
   local status=$2
-  local message=$3
+  local msg=$3
   local data=${4:-null}
 
   echo "{
   \"meta\": {
     \"code\": $code,
     \"status\": \"$status\",
-    \"message\": \"$message\",
+    \"message\": \"$msg\",
     \"trace_id\": \"$TRACE_ID\",
     \"request_id\": \"$REQUEST_ID\",
     \"timestamp\": \"$(date -Iseconds)\"
@@ -62,17 +51,13 @@ json() {
 }"
 }
 
-success() { json "$@"; }
-
-error() {
-  json "$1" "ERROR" "$2" null
-  exit 1
-}
+success() { json 200 "SUCCESS" "$1" "${2:-null}"; }
+error() { json "$1" "ERROR" "$2" null; exit 1; }
 
 ########################################
-# HELPERS
+# SCHEMA（企业级校验）
 ########################################
-require_param() {
+require() {
   [[ -z "${PARAMS[$1]:-}" ]] && error 400 "missing_param:$1"
 }
 
@@ -83,12 +68,11 @@ file_igw() { echo "$DATA_DIR/igw_$1.json"; }
 # VPC
 ########################################
 vpc_create() {
-  require_param key
+  require key
   local key="${PARAMS[key]}"
   local file=$(file_vpc "$key")
 
   if [[ -f "$file" ]]; then
-    # 幂等返回（重点）
     json 200 "SUCCESS" "idempotent_hit" "$(cat "$file")"
     return
   fi
@@ -100,10 +84,9 @@ vpc_create() {
 }
 
 vpc_get() {
-  require_param key
+  require key
   local file=$(file_vpc "${PARAMS[key]}")
   [[ ! -f "$file" ]] && error 404 "vpc_not_found"
-
   json 200 "SUCCESS" "ok" "$(cat "$file")"
 }
 
@@ -111,14 +94,13 @@ vpc_get() {
 # IGW
 ########################################
 igw_create() {
-  require_param key
-  require_param vpc
+  require key
+  require vpc
 
   local key="${PARAMS[key]}"
   local vpc="${PARAMS[vpc]}"
 
-  local vpc_file=$(file_vpc "$vpc")
-  [[ ! -f "$vpc_file" ]] && error 404 "vpc_not_found"
+  [[ ! -f "$(file_vpc "$vpc")" ]] && error 404 "vpc_not_found"
 
   local file=$(file_igw "$key")
 
@@ -134,10 +116,9 @@ igw_create() {
 }
 
 igw_get() {
-  require_param key
+  require key
   local file=$(file_igw "${PARAMS[key]}")
   [[ ! -f "$file" ]] && error 404 "igw_not_found"
-
   json 200 "SUCCESS" "ok" "$(cat "$file")"
 }
 
