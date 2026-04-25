@@ -1,17 +1,4 @@
-VPC
- ├── Subnet
- ├── RouteTable
- ├── InternetGateway (IGW)
- ├── NAT Gateway
- └── Security Group
-
-
-
-
-
-
-
- #!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 
