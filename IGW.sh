@@ -27,13 +27,15 @@ TRACE_ID="${TRACE_ID:-$(generate_trace_id)}"
 REQUEST_ID="${REQUEST_ID:-$(generate_request_id)}"
 
 ########################################
-# JSON
+# ERROR FIRST (关键修复)
 ########################################
 json() {
   local code=$1
   local status=$2
   local msg=$3
   local data=${4:-null}
+  local err_type=${5:-null}
+  local err_detail=${6:-null}
 
   cat <<EOF
 {
@@ -45,35 +47,38 @@ json() {
     "request_id": "$REQUEST_ID",
     "timestamp": "$(date -Iseconds)"
   },
-  "data": $data
+  "data": $data,
+  "error": $( [[ "$err_type" == "null" ]] && echo "null" || cat <<EOT
+{
+  "type": "$err_type",
+  "details": "$err_detail"
+}
+EOT
+)
 }
 EOF
 }
 
 success() { json 0 "SUCCESS" "$1" "${2:-null}"; }
-error() { json "$1" "ERROR" "$2" null; exit 1; }
+error() { json "$1" "ERROR" "$2" null "$2" "${3:-}"; exit 1; }
 
 ########################################
-# PARAM PARSER
+# PARSER
 ########################################
 parse_args() {
+  DRY_RUN=false
   declare -gA PARAMS=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dry-run)
-        DRY_RUN=true
-        shift
-        ;;
-      *=*)
-        k="${1%%=*}"
+      --dry-run) DRY_RUN=true; shift ;;
+      --*=*)
+        k="${1%%=*}"; k="${k#--}"
         v="${1#*=}"
         PARAMS["$k"]="$v"
-        shift
-        ;;
+        shift ;;
       *)
-        shift
-        ;;
+        shift ;;
     esac
   done
 }
@@ -84,7 +89,7 @@ parse_args "$@"
 # CORE
 ########################################
 require_param() {
-  [[ -z "${PARAMS[$1]:-}" ]] && error 1000 "missing $1"
+  [[ -z "${PARAMS[$1]:-}" ]] && error 1000 "INVALID_ARGUMENT" "missing $1"
 }
 
 resource_file() {
@@ -99,7 +104,7 @@ vpc_create() {
   local key="${PARAMS[key]}"
   local file=$(resource_file "$key")
 
-  [[ -f "$file" ]] && error 1002 "vpc exists"
+  [[ -f "$file" ]] && error 1002 "ALREADY_EXISTS" "vpc exists"
 
   echo "{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}" > "$file"
   success "vpc created"
@@ -115,15 +120,12 @@ igw_create() {
   local key="${PARAMS[key]}"
   local vpc="${PARAMS[vpc]}"
 
-  # FIX: safe check
-  if [[ ! -f "$DATA_DIR/vpc_${vpc}.json" ]]; then
-    error 1001 "vpc not found"
-  fi
+  [[ ! -f "$DATA_DIR/vpc_${vpc}.json" ]] && error 1001 "NOT_FOUND" "vpc not found"
 
-  # FIX: safe grep (avoid empty file crash)
+  # safe check
   if ls "$DATA_DIR"/igw_*.json >/dev/null 2>&1; then
     if grep -q "\"vpc\":\"$vpc\"" "$DATA_DIR"/igw_*.json 2>/dev/null; then
-      error 1002 "igw exists"
+      error 1002 "ALREADY_EXISTS" "IGW exists for VPC"
     fi
   fi
 
@@ -134,29 +136,20 @@ igw_create() {
 }
 
 ########################################
-# ROUTER (FIXED)
+# ROUTER
 ########################################
-
-RESOURCE=${1:-}
-ACTION=${2:-}
+RESOURCE=${2:-}
+ACTION=${1:-}
 shift 2 || true
 
 case "$RESOURCE" in
   vpc)
-    case "$ACTION" in
-      create) vpc_create ;;
-      *) error 1000 "invalid action" ;;
-    esac
+    [[ "$ACTION" == "create" ]] && vpc_create ;;
     ;;
-
   igw)
-    case "$ACTION" in
-      create) igw_create ;;
-      *) error 1000 "invalid action" ;;
-    esac
+    [[ "$ACTION" == "create" ]] && igw_create ;;
     ;;
-
   *)
-    error 1000 "unknown resource"
+    error 1000 "INVALID_ARGUMENT" "unknown resource"
     ;;
 esac
