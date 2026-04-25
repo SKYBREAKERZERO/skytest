@@ -115,13 +115,21 @@ vpc_delete() {
 
 vpc_list() {
   local arr="["
+  local first=true
 
-  for f in "$DATA_DIR"/vpc_*.json 2>/dev/null; do
+  for f in "$DATA_DIR"/vpc_*.json; do
     [[ ! -f "$f" ]] && continue
-    arr+="$(cat "$f"),"
+
+    if [[ "$first" == true ]]; then
+      first=false
+    else
+      arr+=","
+    fi
+
+    arr+="$(cat "$f")"
   done
 
-  arr="${arr%,}]"
+  arr+="]"
 
   ok "list" "$arr"
 }
