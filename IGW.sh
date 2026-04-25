@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-
+########################################
+# INIT
+########################################
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 DB_DIR="$BASE_DIR/.mockdb"
 DATA_DIR="$DB_DIR/data"
@@ -10,77 +12,23 @@ LOG_DIR="$BASE_DIR/logs"
 
 mkdir -p "$DATA_DIR" "$IDEM_DIR" "$LOG_DIR"
 
-
+########################################
+# TRACE
+########################################
 generate_trace_id() {
-  if command -v uuidgen >/dev/null 2>&1; then
-    uuidgen
-  elif [[ -f /proc/sys/kernel/random/uuid ]]; then
-    cat /proc/sys/kernel/random/uuid
-  else
-    echo "$(date +%s)$(od -An -N4 -tu4 < /dev/urandom | tr -d ' ')"
-  fi
+  command -v uuidgen >/dev/null 2>&1 && uuidgen || date +%s
 }
 
 generate_request_id() {
-  echo "req-$(date +%s)-$(head -c6 /dev/urandom | base64 | tr -dc a-z0-9)"
+  echo "req-$(date +%s)-$RANDOM"
 }
 
 TRACE_ID="${TRACE_ID:-$(generate_trace_id)}"
 REQUEST_ID="${REQUEST_ID:-$(generate_request_id)}"
 
-ACTION=${1:-}
-RESOURCE=${2:-}
-shift 2 || true
-
-parse_args() {
-  DRY_RUN=false
-  IDEMPOTENCY_KEY=""
-
-  declare -gA PARAMS=()
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --dry-run) DRY_RUN=true; shift ;;
-
-      --request-id=*)
-        REQUEST_ID="${1#*=}"; shift ;;
-
-      --request-id)
-        REQUEST_ID="$2"; shift 2 ;;
-
-      --idempotency-key=*|--idem-key=*)
-        IDEMPOTENCY_KEY="${1#*=}"; shift ;;
-
-      --idempotency-key|--idem-key)
-        IDEMPOTENCY_KEY="$2"; shift 2 ;;
-
-      --*=*)
-        k="${1%%=*}"; k="${k#--}"
-        v="${1#*=}"
-        PARAMS["$k"]="$v"
-        shift ;;
-
-      --*)
-        k="${1#--}"
-        v="$2"
-        PARAMS["$k"]="$v"
-        shift 2 ;;
-
-      *=*)
-        k="${1%%=*}"
-        v="${1#*=}"
-        PARAMS["$k"]="$v"
-        shift ;;
-
-      *)
-        error 1000 "INVALID_ARGUMENT" "unknown argument: $1"
-        ;;
-    esac
-  done
-}
-parse_args "$@"
-
-
+########################################
+# ERROR FIRST (关键修复)
+########################################
 json() {
   local code=$1
   local status=$2
@@ -100,13 +48,13 @@ json() {
     "timestamp": "$(date -Iseconds)"
   },
   "data": $data,
-  "error": $(if [[ "$err_type" == "null" ]]; then echo "null"; else cat <<EOT
+  "error": $( [[ "$err_type" == "null" ]] && echo "null" || cat <<EOT
 {
   "type": "$err_type",
   "details": "$err_detail"
 }
 EOT
-fi)
+)
 }
 EOF
 }
@@ -114,42 +62,57 @@ EOF
 success() { json 0 "SUCCESS" "$1" "${2:-null}"; }
 error() { json "$1" "ERROR" "$2" null "$2" "${3:-}"; exit 1; }
 
+########################################
+# PARSER
+########################################
+parse_args() {
+  DRY_RUN=false
+  declare -gA PARAMS=()
 
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) DRY_RUN=true; shift ;;
+      --*=*)
+        k="${1%%=*}"; k="${k#--}"
+        v="${1#*=}"
+        PARAMS["$k"]="$v"
+        shift ;;
+      *)
+        shift ;;
+    esac
+  done
+}
+
+parse_args "$@"
+
+########################################
+# CORE
+########################################
 require_param() {
-  [[ -z "${PARAMS[$1]:-}" ]] && error 1000 "INVALID_ARGUMENT" "missing param: $1"
+  [[ -z "${PARAMS[$1]:-}" ]] && error 1000 "INVALID_ARGUMENT" "missing $1"
 }
 
 resource_file() {
   echo "$DATA_DIR/${RESOURCE}_$1.json"
 }
 
-audit_log() {
-  echo "$(date -Iseconds) trace=$TRACE_ID req=$REQUEST_ID action=$ACTION resource=$RESOURCE params=$*" >> "$LOG_DIR/api.log"
-}
-
-
-check_idem() {
-  local f="$IDEM_DIR/$1.json"
-  [[ -f "$f" ]] && cat "$f" && exit 0
-}
-save_idem() { echo "$2" > "$IDEM_DIR/$1.json"; }
-
-
+########################################
+# VPC
+########################################
 vpc_create() {
   require_param key
   local key="${PARAMS[key]}"
   local file=$(resource_file "$key")
 
-  [[ -f "$file" ]] && error 1002 "ALREADY_EXISTS" "vpc:$key exists"
+  [[ -f "$file" ]] && error 1002 "ALREADY_EXISTS" "vpc exists"
 
-  local data="{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}"
-
-  [[ "$DRY_RUN" == true ]] && success "dry-run create vpc" "$data" && return
-
-  echo "$data" > "$file"
-  success "vpc created" "$data"
+  echo "{\"resource\":\"vpc\",\"key\":\"$key\",\"state\":\"ACTIVE\"}" > "$file"
+  success "vpc created"
 }
 
+########################################
+# IGW
+########################################
 igw_create() {
   require_param key
   require_param vpc
@@ -157,134 +120,36 @@ igw_create() {
   local key="${PARAMS[key]}"
   local vpc="${PARAMS[vpc]}"
 
-  [[ ! -f "$DATA_DIR/vpc_${vpc}.json" ]] && error 1001 "NOT_FOUND" "vpc:$vpc not found"
+  [[ ! -f "$DATA_DIR/vpc_${vpc}.json" ]] && error 1001 "NOT_FOUND" "vpc not found"
 
-  # 一个 VPC 一个 IGW
-  if grep -l "\"vpc\":\"$vpc\"" "$DATA_DIR"/igw_*.json 2>/dev/null | grep .; then
-    error 1002 "ALREADY_EXISTS" "vpc:$vpc already has igw"
+  # safe check
+  if ls "$DATA_DIR"/igw_*.json >/dev/null 2>&1; then
+    if grep -q "\"vpc\":\"$vpc\"" "$DATA_DIR"/igw_*.json 2>/dev/null; then
+      error 1002 "ALREADY_EXISTS" "IGW exists for VPC"
+    fi
   fi
 
   local file=$(resource_file "$key")
+  echo "{\"resource\":\"igw\",\"key\":\"$key\",\"vpc\":\"$vpc\",\"state\":\"ATTACHED\"}" > "$file"
 
-  local data="{\"resource\":\"igw\",\"key\":\"$key\",\"vpc\":\"$vpc\",\"state\":\"ATTACHED\"}"
-
-  [[ "$DRY_RUN" == true ]] && success "dry-run create igw" "$data" && return
-
-  echo "$data" > "$file"
-  success "igw created" "$data"
+  success "igw created"
 }
 
-get() {
-  require_param key
-  local f=$(resource_file "${PARAMS[key]}")
-  [[ ! -f "$f" ]] && error 1001 "NOT_FOUND" "resource not found"
-  success "ok" "$(cat "$f")"
-}
-
-delete() {
-  require_param key
-  local f=$(resource_file "${PARAMS[key]}")
-  [[ ! -f "$f" ]] && error 1001 "NOT_FOUND" "resource not found"
-  rm -f "$f"
-  success "deleted"
-}
-
-list() {
-  local arr="["
-  local first=true
-  for f in "$DATA_DIR"/${RESOURCE}_*.json 2>/dev/null; do
-    [[ ! -f "$f" ]] && continue
-    key=$(basename "$f" | sed "s/${RESOURCE}_//" | sed 's/.json//')
-    [[ "$first" == true ]] && first=false || arr+=","
-    arr+="{\"key\":\"$key\"}"
-  done
-  arr+="]"
-  success "ok" "$arr"
-}
-
-audit_log "$@"
+########################################
+# ROUTER
+########################################
+RESOURCE=${2:-}
+ACTION=${1:-}
+shift 2 || true
 
 case "$RESOURCE" in
   vpc)
-    case "$ACTION" in
-      create) vpc_create ;;
-      get) get ;;
-      list) list ;;
-      delete) delete ;;
-    esac
+    [[ "$ACTION" == "create" ]] && vpc_create ;;
     ;;
-
   igw)
-    case "$ACTION" in
-      create) igw_create ;;
-      get) get ;;
-      list) list ;;
-      delete) delete ;;
-    esac
+    [[ "$ACTION" == "create" ]] && igw_create ;;
     ;;
-
   *)
     error 1000 "INVALID_ARGUMENT" "unknown resource"
     ;;
 esac
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
