@@ -11,39 +11,57 @@ run() {
   "$API" "$@"
 }
 
-case "${1:-}" in
+RESOURCE="${1:-}"
+ACTION="${2:-}"
+shift 2 || true
+
+case "$RESOURCE" in
 
   vpc)
-    case "${2:-}" in
+    case "$ACTION" in
       create)
-        log "CREATE VPC vpc-1"
-        run vpc create key=vpc-1
+        log "CREATE VPC"
+        run vpc create "$@"
         ;;
       get)
-        run vpc get key=vpc-1
+        log "GET VPC"
+        run vpc get "$@"
+        ;;
+      delete)
+        log "DELETE VPC"
+        run vpc delete "$@"
+        ;;
+      list)
+        run vpc list "$@"
         ;;
       *)
-        echo "usage: vpc create|get"
+        echo "Usage: vpc create|get|delete|list"
         ;;
     esac
     ;;
 
   igw)
-    case "${2:-}" in
+    case "$ACTION" in
       create)
-        log "CREATE IGW igw-1"
-        run igw create key=igw-1 vpc=vpc-1
+        log "CREATE IGW"
+        run igw create "$@"
         ;;
       get)
-        run igw get key=igw-1
+        run igw get "$@"
+        ;;
+      delete)
+        run igw delete "$@"
+        ;;
+      list)
+        run igw list "$@"
         ;;
       *)
-        echo "usage: igw create|get"
+        echo "Usage: igw create|get|delete|list"
         ;;
     esac
     ;;
 
   *)
-    echo "usage: vpc|igw create|get"
+    echo "Usage: vpc|igw ..."
     ;;
 esac
